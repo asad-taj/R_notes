@@ -1,0 +1,400 @@
+---
+title: "Rural India Financial Analysis"
+author: "Asad Ahamad"
+date: "February 18, 2018"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = F, warning = F)
+```
+
+* [Introduction](#intro)
+* [Libraries](#libraries)
+* [Import Data](#import)
+* [Data Cleaning](#cleaning)
+* [Exploratory Data Analysis](#eda)
+* [Data Modeling](#model)
+
+## Introduction{#intro}
+
+In Banking industry, loan applications are generally approved after a thorough background check of the customer's repayment capabilities. Credit Score plays a significant role in identifying customer's financial behavior (specifically default). However, people belonging to rural India don't have credit score and it is difficult to do a direct assessment.
+
+We need to understand the maximum repayment capability of customers which can be used to grant them the desired amount.
+
+## Libraries {#libraries}
+```{r echo=TRUE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(Hmisc)
+library(readxl)
+library(mice)
+library(VIM)
+library(dummies)
+library(caret)
+theme_set(theme_bw())
+```
+
+## Import Data {#import}
+
+Let's read the data file provided for this:
+
+```{r}
+raw_data <- read.csv('Data/trainingData.csv',na.strings = c('NA', 'NULL', '#N/A', '#NAME?', '', 'nil', 'Nil'), stringsAsFactors = F)
+```
+
+Let's check the quick summary and structure of data loaded
+
+```{r echo=TRUE}
+describe(raw_data)
+```
+This shows there are missing values in data. There is very high values in columns age, annual_income, monthly_expense, occupants_count, house_area, and loan_amount.
+
+Let's check how many values are there after 99th percentile in each column:
+
+```{r}
+check_cols <- c('age', 'annual_income', 'monthly_expense', 'occupants_count', 'house_area', 'loan_amount')
+for (i in 1:ncol(raw_data)){
+  col_name = colnames(raw_data)[i]
+  if(any(col_name %in% check_cols)){
+    cat(paste('column no', i, 'with name', col_name , 'has '))
+  cat(paste(sum(raw_data[,i] > quantile(raw_data[,i], probs = .99)), 'values.\n'))
+  }
+}
+```
+
+Also check the missing value percentage in each column:
+
+```{r}
+for (i in 1:ncol(raw_data)){
+  col_name = colnames(raw_data)[i]
+  cat(paste('column no', i, 'with name', col_name , 'has '))
+  cat(paste(sum(is.na(raw_data[, i]))/nrow(raw_data)*100, 'percent missing values.\n'))
+}
+```
+
+## Data Cleaning {#cleaning}
+Looking at the summary of each variable we notice that there are missing values and very high values in some columns. Before proceeding for exploaratory data analysis let's clean the data:
+
+### Missing values analysis
+ Let's see what is the missing value distribution in data before imputing/correcting values
+ 
+```{r, fig.width =30, fig.height = 10, fig.align='center'}
+aggr_plot <- aggr(raw_data, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(raw_data), cex.axis=1, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+
+Let's replace missing values using predictive mean matching algorithm
+
+```{r}
+proc_data = mice(raw_data, m = 5, method = 'pmm', seed = 100)
+proc_data <- complete(proc_data, 1)
+```
+
+### City
+
+City has 856 distinct values
+
+```{r}
+proc_data$city <- tolower(proc_data$city)
+proc_data$city[is.na(proc_data$city)] <- 'unknown'
+```
+
+### Age
+
+As age has values more than 100 years we will clip the age to 100 and check its distribution
+
+```{r, fig.width=30, fig.height=10, fig.align='center'}
+proc_data$age[proc_data$age > 100] <- 100
+ggplot(proc_data, aes(x = age)) + geom_density()
+```
+
+### Sex
+
+There are three levels in Sex (M, F, TG) as there are very few TG applicant we can replace them with majority class
+
+```{r, fig.width=30, fig.height=10, fig.align='center'}
+proc_data$sex[proc_data$sex == 'TG'] <- 'F'
+ggplot(proc_data, aes(x = sex)) + geom_bar()
+```
+
+### Social Class
+
+Social class has 519 distinct values with around 13% missing data
+
+```{r}
+proc_data$social_class <- tolower(proc_data$social_class)
+proc_data$social_class[is.na(proc_data$social_class)] <- 'unknown' 
+```
+
+### Primary Business
+Primary business has 441 distinct values
+
+```{r}
+proc_data$primary_business <- tolower(proc_data$primary_business)
+proc_data$primary_business[is.na(proc_data$primary_business)] <- 'unknown'
+```
+
+### Secondary Business
+There are 5 distinct values with approx. 13% missing data, 78.7% data is reported none
+
+```{r}
+proc_data$secondary_business <- tolower(proc_data$secondary_business)
+proc_data$secondary_business[is.na(proc_data$secondary_business)] <- 'unknown'
+```
+
+This column can be populated based on the values reported in primary_business column.
+
+### Annual Income
+
+```{r}
+ggplot(proc_data, aes(x = annual_income)) + geom_density()
+```
+
+It is clear after looking at this plot that there are few very high values. Let's clip this column to 99th percentile
+
+```{r}
+perc_99 <- quantile(proc_data$annual_income, .99)
+proc_data$annual_income[proc_data$annual_income > perc_99] <- perc_99
+ggplot(proc_data, aes(x = annual_income)) + geom_density()
+```
+
+### Monthly Expense
+```{r}
+ggplot(proc_data, aes(x = monthly_expenses)) + geom_density()
+```
+
+Same observation as annual_income, very few high values. We will do same treatment here
+
+```{r}
+perc_99 <- quantile(proc_data$monthly_expenses, .99)
+proc_data$monthly_expenses[proc_data$monthly_expenses > perc_99] <- perc_99
+ggplot(proc_data, aes(x = monthly_expenses)) + geom_density()
+```
+
+### Home Ownership
+
+It is a flag varibale. We will replace missing values with majority class
+
+```{r}
+proc_data$home_ownership[is.na(proc_data$home_ownership)] <- 1
+```
+
+### House Type
+
+Let's replace missing values with majority class
+
+```{r}
+proc_data$type_of_house[is.na(proc_data$type_of_house)] <- 'T2'
+```
+
+### Occupants Count
+
+```{r}
+ggplot(proc_data, aes(x = occupants_count)) + geom_density()
+```
+
+It has very high values, let's clip it using 99th percentile value
+
+```{r}
+perc_99 <- quantile(proc_data$occupants_count, .99)
+proc_data$occupants_count[proc_data$occupants_count > perc_99] <- perc_99
+ggplot(proc_data, aes(x = occupants_count)) + geom_density()
+```
+
+### House Area
+
+```{r}
+ggplot(proc_data, aes(x = house_area)) + geom_density()
+```
+
+It has very high values, let's clip it using 99th percentile value
+
+```{r}
+perc_99 <- quantile(proc_data$house_area, .99)
+proc_data$house_area[proc_data$house_area > perc_99] <- perc_99
+ggplot(proc_data, aes(x = house_area)) + geom_density()
+```
+
+### Sanitary Availability
+
+There is values -1 which is appeared once in data, we will replace it with next nearest value 0
+```{r}
+proc_data$sanitary_availability[proc_data$sanitary_availability == -1] <- 0
+```
+
+### Water Availability
+
+There is values -1 which is appeared once in data, we will replace it with next nearest value 0
+
+```{r}
+proc_data$water_availabity[proc_data$water_availabity == -1] <- 0
+```
+
+### loan_purpose
+
+There is 37 distinct values with 26 missig data points. As this variable is recommended by business we will try to fix it here so that it is usable in model
+
+```{r}
+proc_data$loan_purpose <- tolower(proc_data$loan_purpose)
+proc_data$loan_purpose[is.na(proc_data$loan_purpose)] <- 'unknown'
+proc_data$loan_purpose[proc_data$loan_purpose == 'cyber caf_'] <- 'cyber cafe'
+```
+
+## Exploratory Data Analysis {#eda}
+In exploraotry data analysis we will check how columns are associated with loan amount. Accordingly we can select/add features for loan amount prediction model.
+
+### City
+
+Let's check the distribution of loan_amount in top 10 cities
+
+```{r kable}
+top_10_city = proc_data %>% group_by(city) %>% summarise(count = n(), mean_laon_amt = mean(loan_amount), sd_loan_amt = sd(loan_amount)) %>% arrange(count, desc(count)) %>% top_n(10, count)
+knitr::kable(top_10_city, digits = 2, align = 'c', caption = 'Top 10 Cities')
+```
+
+Above table shows that there is no much difference in mean loan_amount for top 10 cities, we will remove unknown value because it has more variance and mean and see other cities distribution
+
+```{r}
+top_10_city = top_10_city$city[top_10_city$city != 'unknown']
+top_10_city_data <- proc_data %>% filter(city %in% top_10_city)
+ggplot(top_10_city_data, aes(x = city, y = loan_amount/1000)) + geom_boxplot() +
+ ylab('loan_amount (in thousands)') 
+```
+
+### Age
+
+```{r}
+ggplot(proc_data, aes(x = age, y = loan_amount/1000)) + geom_point() + ylab('loan_amount (in thousands)')
+```
+
+As we can see there are still outliers in data as most of the loan_amount is less than 20 thousands, specially there are values where age is near to zero. We have to remove these cases as age eligibilty for applying loan is 18 years.
+
+```{r}
+proc_data <- proc_data[!(proc_data$age < 18),]
+```
+
+We will leave other high values and see if it make sense during the modeling process
+
+### Sex
+
+As there are few high values in loan_amount we can use log loan_aamount 
+
+```{r}
+log_loan_amount <- log(proc_data$loan_amount)
+ggplot(proc_data, aes(x = sex, y = log_loan_amount)) + geom_boxplot() +
+ ylab('log(loan_amount)') 
+```
+
+loan_amount median is almost same for both genders except that females has more high value laon applied than males
+
+### Social Class, Primary Business, Secondary Business
+
+As of now we know that Social class and Primary Business has 520 and 442 distinct values. Even if we try to make it amenable to modeling it will take more time. Hence we will leave these variables.
+
+For Secondary business we know that it has so many none values reported. Let's check it again
+
+```{r kable}
+sec_business_stat = proc_data %>% group_by(secondary_business) %>% summarise(count = n(), mean_laon_amt = mean(loan_amount), sd_loan_amt = sd(loan_amount)) %>% arrange(count, desc(count))
+knitr::kable(sec_business_stat, digits = 2, align = 'c', caption = 'Loan Amount Stats for Secondary Business')
+```
+
+We will ignore this during the modeling.
+
+### Annual Income and Monthly Expenses
+
+These columns are inter related, as we understand that if we have more income more expense can be expected. It will be interesting to understand thier relationship with loan_amount.
+
+```{r}
+ggplot(proc_data, aes(x = annual_income, y = monthly_expenses, color = loan_amount)) + geom_point(aes(size = loan_amount))
+```
+
+Let's remove higher loan amount (more than 20k) to see whether we find any pattern
+
+```{r}
+plot_data <- proc_data[proc_data$loan_amount <= 20000, ]
+ggplot(plot_data, aes(x = annual_income, y = monthly_expenses, color = loan_amount)) + geom_point()
+```
+
+We can see every income class has applied higher loans. It seems income and expense is not correlated and does not affect loan amount. We may find it useful during modeling when we work on multivariate data. We will agan check correlation to confirm the same
+
+```{r kable}
+cor_mat <- cor(proc_data[, c('annual_income', 'monthly_expenses', 'loan_amount')])
+knitr::kable(cor_mat, digits = 2, align = 'c', caption = 'Correlation Matrix')
+```
+Correlation table shows a slight positive correlation between monthly expense and annual income however there is very low correlation between these and loan_amount
+
+## Data Modeling{#model}
+
+Choose the variables which we want to include in the model
+
+```{r}
+keep_cols = c('age', 'sex', 'annual_income', 'monthly_expenses', 'old_dependents', 'young_dependents', 'home_ownership', 'type_of_house', 'occupants_count', 'house_area', 'sanitary_availability', 'water_availabity', 'loan_purpose', 'loan_tenure', 'loan_installments', 'loan_amount')
+model_data <- proc_data[, keep_cols]
+```
+
+Let's derive few more variables for modeling, we will also make all the charcter columns factor and dummy for creating models
+
+```{r}
+model_data$monthly_liability = model_data$annual_income/12 - model_data$monthly_expenses
+model_data$dependents <- model_data$old_dependents + model_data$young_dependents
+model_data$log_loan_amt <- log(model_data$loan_amount)
+model_data$loan_amount <- NULL
+model_data_factor <- model_data %>% mutate_if(is.character, as.factor)
+model_data_dummy <- dummy.data.frame(model_data, sep = '_') 
+```
+
+Let's partition model_data versions in train and test sets
+
+```{r}
+train_index <- sample(nrow(model_data), size = 30000)
+model_data_factor_train <- model_data_factor[train_index, ]
+model_data_factor_test <- model_data_factor[-train_index, ]
+model_data_dummy_train <- model_data_dummy[train_index, ]
+model_data_dummy_test <- model_data_dummy[-train_index, ]
+predictors_factor <- names(model_data_factor)[names(model_data_factor) !=  'log_loan_amt']
+predictors_dummy <- names(model_data_dummy)[names(model_data_dummy) !=  'log_loan_amt']
+```
+
+Run the baseline model for both the datasets, we are going to use GBM method in caret to model as there are correlated variables in data and a tree based ensemble method can be a good baseline model
+
+```{r}
+myControl <- trainControl(method='cv', number=3, returnResamp='none', verboseIter = F)
+base_model_factor <- train(model_data_factor_train[,predictors_factor], model_data_factor_train[,'log_loan_amt'], method='gbm', trControl=myControl)
+base_model_dummy <- train(model_data_dummy_train[,predictors_dummy], model_data_dummy_train[,'log_loan_amt'], method='gbm', trControl=myControl)
+```
+
+Let's check accuracy of both the models on test data
+
+```{r}
+pred_fac_out <- predict(base_model_factor, model_data_factor_test[, predictors_factor])
+pred_dum_out <- predict(base_model_dummy, model_data_dummy_test[, predictors_dummy])
+cat(RMSE(pred_fac_out, model_data_factor_test$log_loan_amt))
+cat(RMSE(pred_dum_out, model_data_dummy_test$log_loan_amt))
+```
+
+Root Mean Square Error(RMSE) show dummy model is slightly better than factor. 
+Let's plot the actuals and predicted for both the models :
+
+```{r}
+plot_data <- data.frame(actuals_fac = model_data_factor_test$log_loan_amt,
+                        pred_fac = pred_fac_out, actuals_dum = model_data_dummy_test$log_loan_amt, pred_dum = pred_dum_out)
+ggplot(plot_data, aes(x = actuals_fac, y = pred_fac)) + geom_point() + ggtitle('Actuals Vs Predicted using factor data')
+```
+
+```{r}
+ggplot(plot_data, aes(x = actuals_dum, y = pred_dum)) + geom_point() + ggtitle('Actuals Vs Predicted using dummy data')
+```
+
+### Variable Importance
+
+```{r}
+sum_fac <- summary(base_model_factor)
+barplot(height = sum_fac$rel.inf, names.arg = sum_fac$var, main = 'Varibale Importance for factor model', las = 2)
+```
+
+```{r}
+sum_dum <- summary(base_model_dummy)
+barplot(height = sum_dum$rel.inf, names.arg = sum_dum$var, main = 'Varibale Importance for dummy model', las = 2)
+```
